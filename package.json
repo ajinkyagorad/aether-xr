@@ -1,0 +1,21 @@
+{
+  "name": "aether-xr",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AETHER — spatial holographic workspace for Meta Quest 3 (WebXR passthrough)",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "deploy": "vite build && wrangler pages deploy dist --project-name aether-xr",
+    "deploy:preview": "vite build && wrangler pages deploy dist --project-name aether-xr --branch preview"
+  },
+  "dependencies": {
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0",
+    "wrangler": "^4.40.0"
+  }
+}
