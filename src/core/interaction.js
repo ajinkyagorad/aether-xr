@@ -81,9 +81,12 @@ export class Interaction {
   // ------------------------------------------------------------- resolving
 
   resolve(pointer, i, panels) {
-    // A held drag keeps its target no matter where the hand wanders.
+    // A held press keeps its target no matter where the hand wanders — and
+    // critically it must survive the frame the pinch *opens* on, because that
+    // is the frame the click fires. Dropping the lock as soon as `pinching`
+    // went false meant far-field taps never registered at all.
     const held = this.targets[i];
-    if (held?.locked && pointer.pinching) {
+    if (held?.locked) {
       if (held.type === 'ray') this.updateRayDrag(pointer, held);
       return held;
     }

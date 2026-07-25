@@ -257,11 +257,20 @@ export class XRInput {
     p.downEdge = p.pinching && !wasPinching;
     p.upEdge = !p.pinching && wasPinching;
 
-    // -- summon gesture: both palms up and held for ~0.6 s --------------
+    // -- summon gesture --------------------------------------------------
+    // Off by default. The original version accepted any flat hand below eye
+    // level, which is exactly the pose you hold while pointing a ray at a
+    // menu — so the workspace kept teleporting onto the user's head mid-click.
+    // Recentring now lives on an explicit dock button; this is opt-in only.
     p.palmUpHeld = p.palmUp ? p.palmUpHeld + dt : 0;
-    if (p.palmUpHeld > 0.6 && this.pointers.every((q) => q.palmUpHeld > 0.5)) {
+    if (
+      this.summonGestureEnabled &&
+      p.palmUpHeld > 1.2 &&
+      this.pointers.every((q) => q.palmUpHeld > 1.0) &&
+      this.pointers[0].gripPos.distanceTo(this.pointers[1].gripPos) < 0.45
+    ) {
       this.gestures.push('summon');
-      this.pointers.forEach((q) => (q.palmUpHeld = -1.5)); // debounce
+      this.pointers.forEach((q) => (q.palmUpHeld = -2.5)); // debounce
     }
 
     // -- visuals --------------------------------------------------------

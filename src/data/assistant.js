@@ -327,3 +327,105 @@ function fallback(text, ctx) {
 
 /** Rough reading time so the reply can stream in at a natural pace. */
 export const replyDelay = (text) => Math.min(1.6, 0.35 + text.length / 400);
+
+// ---------------------------------------------------------------------------
+// optional OpenRouter passthrough
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact snapshot of everything the workspace currently knows, handed to the
+ * remote model as context. Kept small and factual so the model has no room to
+ * invent figures that contradict the panels.
+ */
+function snapshot(ctx) {
+  const { sim, weather, air, site, model, knobs } = ctx;
+  const n = (v, d = 2) => (v == null ? null : Number(v.toFixed(d)));
+  return {
+    subject: model.name,
+    site: `${site.name}${site.country ? ', ' + site.country : ''}`,
+    observed: weather && {
+      tempC: n(weather.temp, 1), windMs: n(weather.wind, 1),
+      humidityPct: weather.humidity, cloudPct: weather.cloud,
+      irradianceWm2: Math.round(weather.irradiance ?? 0),
+      precipMm: n(weather.precip, 1), conditions: wmo(weather.code)[0],
+      source: 'Open-Meteo',
+    },
+    airQuality: air && { eaqi: air.aqi, pm25: n(air.pm25, 1), band: aqiBand(air.aqi).label },
+    modelled: sim && {
+      populationM: n(sim.population),
+      energy: {
+        demandGW: n(sim.energy.demandGW), windGW: n(sim.energy.windGW),
+        solarGW: n(sim.energy.solarGW), renewableSharePct: Math.round(sim.energy.coverage * 100),
+        gridIntensityG: Math.round(sim.energy.intensity),
+      },
+      mobility: { congestionPct: Math.round(sim.mobility.congestion * 100) },
+      water: { reservoirPct: Math.round(sim.water.reservoir * 100) },
+      environment: {
+        canopyPct: Math.round(sim.env.canopy * 100),
+        biodiversity: Math.round(sim.env.biodiversity * 100),
+        ecosystemScore: Math.round(sim.env.ecosystem * 100),
+      },
+      carbonMtPerYear: n(sim.carbonMtYr, 1),
+    },
+    scenarioKnobs: knobs,
+  };
+}
+
+const SYSTEM = `You are the copilot inside AETHER, a spatial XR workspace the user is
+wearing on a Meta Quest 3. A JSON snapshot of the live workspace state follows every
+question. Rules:
+- Answer only from that snapshot plus general knowledge. Never invent a number that
+  contradicts it, and never present a modelled figure as an observation.
+- Observed values come from Open-Meteo; everything under "modelled" is simulation.
+- Be brief: 2-4 sentences. The user is reading this on a floating panel, not a page.
+- No markdown, no bullet lists, no headings. Plain sentences only.`;
+
+/**
+ * Ask OpenRouter. Falls back to the deterministic analyst on any failure, so a
+ * bad key or a dead network degrades to "still works" rather than "broken".
+ * @returns {Promise<{text:string, act?:Function, remote:boolean}>}
+ */
+export async function answerRemote(question, ctx, { key, model }) {
+  if (!key) return { ...answer(question, ctx), remote: false };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 20000);
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      signal: ctl.signal,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${key}`,
+        'HTTP-Referer': location.origin,
+        'X-Title': 'AETHER XR',
+      },
+      body: JSON.stringify({
+        model: model || 'anthropic/claude-3.5-sonnet',
+        max_tokens: 400,
+        messages: [
+          { role: 'system', content: SYSTEM },
+          {
+            role: 'user',
+            content: `${question}\n\nWORKSPACE STATE:\n${JSON.stringify(snapshot(ctx))}`,
+          },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 120)}`);
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error('empty response');
+    // Keep any workspace action the local router would have taken, so remote
+    // answers still drive the UI the way the built-in suggestions do.
+    return { text, act: answer(question, ctx).act, remote: true };
+  } catch (e) {
+    const local = answer(question, ctx);
+    return {
+      ...local,
+      text: `${local.text}\n\n(OpenRouter unavailable — ${String(e.message ?? e).slice(0, 80)} — answered on-device.)`,
+      remote: false,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}

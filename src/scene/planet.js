@@ -277,6 +277,9 @@ export function buildPlanet(theme) {
 
   return {
     group, layers, picks, anchors, labelSpecs, radius: R * 2.2,
+    // A planet floats: no plinth beneath it, and it carries its own atmosphere
+    // shell so the generic containment dome would only double up.
+    chrome: { plinth: false, dome: false },
     update(dt, ctx) {
       const { time, sim, weather, layersOn } = ctx;
       surfaceMat.uniforms.uTime.value = time;

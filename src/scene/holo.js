@@ -119,6 +119,11 @@ export class Hologram {
     const fit = 0.5 / (this.model.radius || 0.5);
     this.model.group.scale.setScalar(fit);
 
+    // Not every subject stands on something. A planet floats, so the plinth
+    // read as an unexplained black disc slicing through its equator.
+    this.plinth.group.visible = this.model.chrome?.plinth !== false;
+    this.dome.mesh.visible = this.model.chrome?.dome !== false;
+
     const specs = (this.model.labelSpecs ?? []).filter((s) => this.model.anchors[s.key]);
     specs.forEach((spec, i) => {
       const l = makeLabel(this.theme, { title: spec.title, value: '—', unit: '' });
@@ -255,9 +260,11 @@ export class Hologram {
       if (!this._twoHand) {
         this._twoHand = { d0: d, s0: this.targetScale, mid0: mid.clone(), off0: this.offset.clone() };
       } else {
+        // Two hands always do the natural thing: spread to resize, carry the
+        // midpoint to reposition. No mode to select first.
         const t = this._twoHand;
         this.targetScale = THREE.MathUtils.clamp(t.s0 * (d / Math.max(0.02, t.d0)), 0.15, 2.4);
-        if (tool === 'move') this.offset.copy(t.off0).add(mid.clone().sub(t.mid0));
+        this.offset.copy(t.off0).add(mid.clone().sub(t.mid0));
       }
       this._grab = null;
     } else if (active.length === 1) {
@@ -269,14 +276,10 @@ export class Hologram {
       if (!this._grab) {
         this._grab = { ang0: ang, yaw0: this.userYaw, y0: p.pinchPoint.y, off0: this.offset.clone(), p0: p.pinchPoint.clone() };
       } else {
-        if (tool === 'move') {
-          this.offset.copy(this._grab.off0).add(p.pinchPoint.clone().sub(this._grab.p0));
-        } else {
-          let delta = ang - this._grab.ang0;
-          while (delta > Math.PI) delta -= Math.PI * 2;
-          while (delta < -Math.PI) delta += Math.PI * 2;
-          this.userYaw = this._grab.yaw0 - delta;
-        }
+        let delta = ang - this._grab.ang0;
+        while (delta > Math.PI) delta -= Math.PI * 2;
+        while (delta < -Math.PI) delta += Math.PI * 2;
+        this.userYaw = this._grab.yaw0 - delta;
       }
     } else {
       this._grab = null;

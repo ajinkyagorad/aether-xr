@@ -62,16 +62,23 @@ export const SECTIONS = [
   { id: 'settings', label: 'Settings', ico: 'settings' },
 ];
 
+/**
+ * The dock.
+ *
+ * Orbit / scale / reposition are *not* buttons — they are always live on a
+ * pinch, because separating them into three modes meant three taps to do what
+ * one gesture already does. `mode: true` entries change what a pinch on the
+ * model means; the rest fire once and are done.
+ */
 export const TOOLS = [
-  { id: 'select', label: 'Select', ico: 'select', hint: 'Pick an element in the model' },
-  { id: 'move', label: 'Move', ico: 'move', hint: 'Pinch-drag to reposition the model' },
-  { id: 'rotate', label: 'Rotate', ico: 'rotate', hint: 'Pinch-drag horizontally to spin' },
-  { id: 'scale', label: 'Scale', ico: 'scale', hint: 'Pinch with both hands and pull apart' },
-  { id: 'measure', label: 'Measure', ico: 'measure', hint: 'Pinch two points to measure between them' },
-  { id: 'section', label: 'Section', ico: 'section', hint: 'Slice the model with a cutting plane' },
-  { id: 'annotate', label: 'Annotate', ico: 'annotate', hint: 'Drop a pin with a note attached' },
-  { id: 'layers', label: 'Layers', ico: 'layers', hint: 'Toggle what the model renders' },
-  { id: 'record', label: 'Record', ico: 'record', hint: 'Capture a flight-path of this session' },
+  { id: 'select', label: 'Select', ico: 'select', mode: true, hint: 'Pinch a part to inspect it · pinch open air to orbit · two hands to scale' },
+  { id: 'annotate', label: 'Note', ico: 'annotate', mode: true, hint: 'Pinch a point on the model to pin a note there' },
+  { id: 'section', label: 'Section', ico: 'section', mode: true, hint: 'Pulls the assembly apart along its axis' },
+  { id: 'layers', label: 'Layers', ico: 'layers', hint: 'Opens the layer list — toggle what the model draws' },
+  { id: 'frame', label: 'Frame', ico: 'focus', hint: 'Refit the model to a comfortable size' },
+  { id: 'recentre', label: 'Recentre', ico: 'target', hint: 'Bring the whole workspace to where you are now' },
+  { id: 'pin', label: 'Pin', ico: 'pin', hint: 'Lock the workspace to this spot in your room' },
+  { id: 'reset', label: 'Reset', ico: 'rotate', hint: 'Clear notes and restore the default arrangement' },
 ];
 
 export const LAYERS = [
@@ -140,6 +147,17 @@ function initial() {
 
     // panel visibility (users can close cards; Home restores them)
     closed: {},
+
+    // anchoring — the workspace only moves when you ask it to
+    pinned: false,
+
+    // copilot: optional OpenRouter passthrough, key held in this browser only
+    aiKey: localStorage.getItem('aether.aiKey') ?? '',
+    aiModel: localStorage.getItem('aether.aiModel') ?? 'anthropic/claude-3.5-sonnet',
+
+    // ambient audio
+    audioOn: false,
+    audioVolume: 0.35,
 
     // session
     data: null, // result of loadSite()

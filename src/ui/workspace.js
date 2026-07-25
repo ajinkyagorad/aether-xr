@@ -45,6 +45,7 @@ const LAYOUT = {
 
   inspector: { w: 0.39, h: 0.26, yaw: -15, pitch: -37, dist: 1.24 },
   settings: { w: 0.64, h: 0.55, yaw: 0, pitch: 3, dist: 1.0, bend: 1.1 },
+  projects: { w: 0.68, h: 0.5, yaw: 0, pitch: 3, dist: 1.0, bend: 1.1 },
   keyboard: { w: 0.66, h: 0.27, yaw: 6, pitch: -16, dist: 0.82, bend: 0.9 },
 };
 
@@ -54,6 +55,38 @@ const KEYS = [
   ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', "'"],
   ['z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '?'],
 ];
+
+/** Frame furniture — present in every view. */
+const CHROME = new Set(['nav', 'topbar', 'dock']);
+/** Constant widgets: what the weather is, and something to ask. */
+const ALWAYS = new Set(['environment', 'copilot']);
+
+/**
+ * Each view brings up the panels that view is actually about. Selecting
+ * "Ecosystem" should change the workspace, not just the highlight.
+ */
+const VIEW_PANELS = {
+  overview: ['vitals', 'assets', 'analysis', 'missions'],
+  surface: ['vitals', 'assets', 'analysis'],
+  ecosystem: ['ecoHealth', 'ecoStatus', 'assets'],
+  analysis: ['analysis', 'vitals', 'assets'],
+  simulation: ['vitals', 'analysis', 'scenarios'],
+  missions: ['missions', 'ecoHealth', 'vitals'],
+  history: ['analysis', 'ecoHealth'],
+};
+
+/** Layer presets so a view also changes what the model draws. */
+const VIEW_LAYERS = {
+  overview: {},
+  surface: { terrain: true, buildings: true, vegetation: true, atmosphere: false, mobility: false, energy: false },
+  ecosystem: { terrain: true, vegetation: true, atmosphere: true, buildings: false, mobility: false, energy: false },
+  analysis: { grid: true, labels: true, atmosphere: false },
+  simulation: { energy: true, mobility: true, atmosphere: true, terrain: true, buildings: true, vegetation: true },
+  missions: { labels: true, terrain: true, buildings: true, vegetation: true },
+  history: { grid: true, terrain: true, buildings: true },
+};
+
+export const viewLayerPreset = (view) => VIEW_LAYERS[view] ?? {};
 
 /** Which state keys force which panels to repaint. */
 const DEPS = {
@@ -71,6 +104,7 @@ const DEPS = {
   scenarios: ['activeScenarios', 'themeId', 'knobs'],
   inspector: ['selection', 'themeId', 'measurement'],
   keyboard: ['themeId', 'chatDraft'],
+  projects: ['modelId', 'themeId', 'section', 'data'],
   settings: ['themeId', 'dim', 'modelId', 'siteId', 'uiScale', 'showGlow', 'reducedMotion', 'section', 'data'],
 };
 
@@ -128,16 +162,27 @@ export class Workspace {
     this.updateVisibility();
   }
 
-  /** Section and selection decide which panels are on the wall right now. */
+  /**
+   * Which panels are on the wall right now.
+   *
+   * Two always-on widgets (environment, copilot) plus the chrome; everything
+   * else is chosen by the active view, so the top tab bar visibly rearranges
+   * the workspace instead of only recolouring itself.
+   */
   updateVisibility() {
     const s = store.get();
-    const inSettings = s.section === 'settings';
+    const modal = s.section === 'settings' ? 'settings' : s.section === 'projects' ? 'projects' : null;
+
     for (const [id, p] of this.panels) {
-      let vis = !store.isClosed(id);
-      if (id === 'settings') vis = inSettings;
-      else if (inSettings) vis = id === 'nav' || id === 'topbar';
-      if (id === 'inspector') vis = vis && (!!s.selection || !!s.measurement);
-      if (id === 'copilot' && s.section === 'assistant') vis = true;
+      let vis;
+      if (CHROME.has(id)) vis = true;
+      else if (modal) vis = id === modal;
+      else if (ALWAYS.has(id)) vis = true;
+      else vis = (VIEW_PANELS[s.view] ?? VIEW_PANELS.overview).includes(id);
+
+      if (store.isClosed(id)) vis = false;
+      if (id === 'inspector') vis = !!s.selection || !!s.measurement;
+      if (id === 'scenarios') vis = s.section === 'datasets' || s.view === 'simulation';
       if (id === 'keyboard') vis = this.chatFocused;
       p.visible = vis;
     }
@@ -613,14 +658,17 @@ export class Workspace {
     TOOLS.forEach((tool, i) => {
       p.tool(`tool:${tool.id}`, pad + i * bw + 3, 28, bw - 6, H - 40, {
         label: tool.label, ico: tool.ico,
-        active: s.tool === tool.id || (tool.id === 'record' && s.recording),
+        // Only modes latch; one-shot actions just flash on hover.
+        active: tool.mode ? s.tool === tool.id : tool.id === 'pin' && s.pinned,
         hover: p.panel.hoverAmount(`tool:${tool.id}`),
       });
     });
 
-    // Contextual hint for whichever tool is armed.
-    const hint = TOOLS.find((x) => x.id === s.tool)?.hint;
-    if (hint) p.text(hint, W - 22, 18, { size: 12.5, align: 'right', color: c(t.ink3, 1), max: W * 0.55 });
+    // Hint follows the pointer: whatever is under the cursor explains itself,
+    // otherwise the armed mode does.
+    const hovered = TOOLS.find((x) => p.panel.hoverAmount(`tool:${x.id}`) > 0.5);
+    const hint = (hovered ?? TOOLS.find((x) => x.id === s.tool))?.hint;
+    if (hint) p.text(hint, W - 22, 18, { size: 12.5, align: 'right', color: c(t.ink3, 1), max: W * 0.62 });
   }
 
   // ------------------------------------------------------------- scenarios
@@ -711,6 +759,50 @@ export class Workspace {
     });
   }
 
+  // -------------------------------------------------------------- projects
+  /** Subjects live here, not buried in Settings — each one is a project. */
+  paint_projects(p, W, H) {
+    const t = this.theme;
+    const s = store.get();
+    p.glass(0, 0, W, H);
+    p.header(24, 30, W - 48, 'Projects', {
+      ico: 'projects', closeId: 'close:projects', hoverClose: p.panel.hoverAmount('close:projects'),
+    });
+    p.text('Pick a subject to load into the workspace.', 24, 56, {
+      size: 15, color: c(t.ink3, 1), max: W - 48,
+    });
+
+    const pad = 24, gap = 16, cols = 2;
+    const cw = (W - pad * 2 - gap) / cols;
+    const chH = (H - 92 - pad - gap) / 2;
+    MODELS.forEach((m, i) => {
+      const x = pad + (i % cols) * (cw + gap);
+      const y = 92 + Math.floor(i / cols) * (chH + gap);
+      const on = s.modelId === m.id;
+      const hov = p.panel.hoverAmount(`model:${m.id}`);
+
+      p.thumb(x, y, cw, chH * 0.52, artFor(m.art), { r: 12, dim: on ? 0 : 0.35 });
+      p.layer('base', (ctx) => {
+        p.rr(x, y, cw, chH, 12);
+        ctx.fillStyle = c(on ? t.accent : t.spec, on ? 0.12 : 0.05 + hov * 0.06);
+        ctx.fill();
+        p.rr(x + 0.5, y + 0.5, cw - 1, chH - 1, 12);
+        ctx.lineWidth = on ? 1.8 : 1;
+        ctx.strokeStyle = c(on ? t.accent : t.edge, on ? 0.9 : t.edgeA);
+        ctx.stroke();
+      });
+      if (on || hov > 0.1) p.halo(x, y, cw, chH, t.accent, { r: 12, alpha: on ? 0.24 : 0.12 * hov });
+
+      const ty = y + chH * 0.52 + 22;
+      p.icon(m.ico, x + 18, ty, 19, c(on ? t.accent : t.ink2, 1), 1.9);
+      p.text(m.name, x + 36, ty, { size: 18, weight: 600, color: c(t.ink, 1), max: cw - 90 });
+      if (on) p.chip(x + cw - 74, ty, 'loaded', { tone: 'accent', size: 11.5 });
+      p.text(m.subtitle, x + 36, ty + 19, { size: 13, color: c(t.ink3, 1), max: cw - 44 });
+      p.paragraph(m.blurb, x + 16, ty + 42, cw - 32, { size: 13, lh: 1.4, maxLines: 2, color: c(t.ink2, 0.92) });
+      p.hit(`model:${m.id}`, x, y, cw, chH, { kind: 'button' });
+    });
+  }
+
   // -------------------------------------------------------------- keyboard
   paint_keyboard(p, W, H) {
     const t = this.theme;
@@ -776,7 +868,7 @@ export class Workspace {
     p.glass(0, 0, W, H);
     p.header(24, 30, W - 48, 'Settings', { ico: 'settings', closeId: 'close:settings', hoverClose: p.panel.hoverAmount('close:settings') });
 
-    const pages = [['appearance', 'Appearance'], ['immersion', 'Immersion'], ['model', 'Model'], ['about', 'About']];
+    const pages = [['appearance', 'Appearance'], ['immersion', 'Immersion'], ['data', 'Data & AI'], ['about', 'About']];
     const tw = (W - 48) / pages.length;
     pages.forEach(([id, label], i) => {
       p.tab(`setPage:${id}`, 24 + i * tw, 50, tw, 32, {
@@ -829,9 +921,23 @@ export class Workspace {
       y += 34;
       p.text('Reduce motion', r.x, y + 8, { size: 15, color: c(t.ink, 0.95) });
       p.toggle('set:motion', r.x + r.w - 38, y, 36, 16, s.reducedMotion, p.panel.hoverAmount('set:motion'));
-      p.text('Stops the idle turntable and softens transitions.', r.x, y + 30, {
-        size: 12.5, color: c(t.ink3, 1), max: r.w,
-      });
+      y += 30;
+      p.divider(r.x, y, r.w);
+      y += 18;
+
+      p.text('Ambient sound', r.x, y + 8, { size: 15, color: c(t.ink, 0.95) });
+      p.toggle('audio:toggle', r.x + r.w - 38, y, 36, 16, s.audioOn, p.panel.hoverAmount('audio:toggle'));
+      y += 30;
+      if (s.audioOn) {
+        p.slider('audio:volume', r.x, y, r.w, s.audioVolume, { valueText: `${Math.round(s.audioVolume * 100)}%` });
+        y += 30;
+      }
+      p.paragraph(
+        'A generated bed tuned to the current theme. Spotify and YouTube cannot render ' +
+          'inside an immersive session — start them from another app on the headset and ' +
+          'they will keep playing over the top of this.',
+        r.x, y + 8, r.w, { size: 12.5, lh: 1.4, maxLines: 3, color: c(t.ink3, 1) }
+      );
     } else if (this.settingsPage === 'immersion') {
       // The passthrough dimmer — the one control that changes where you are.
       p.micro('Reality blend', r.x, r.y, { size: 13 });
@@ -876,30 +982,51 @@ export class Workspace {
           tone: 'accent', hover: p.panel.hoverAmount(`dim:${v}`),
         });
       });
-    } else if (this.settingsPage === 'model') {
-      p.micro('Subject', r.x, r.y, { size: 13 });
-      MODELS.forEach((m, i) => {
-        const y = r.y + 16 + i * 46;
-        const on = s.modelId === m.id;
-        p.listRow(`model:${m.id}`, r.x - 6, y, r.w + 12, 42, {
-          label: m.name, sub: m.blurb, ico: m.ico, active: on,
-          value: on ? 'Loaded' : '', hover: p.panel.hoverAmount(`model:${m.id}`),
-        });
+    } else if (this.settingsPage === 'data') {
+      p.micro('Observation site', r.x, r.y, { size: 13 });
+      p.text('Drives weather, air quality and the whole model.', r.x + r.w, r.y, {
+        size: 12.5, align: 'right', color: c(t.ink3, 1), max: r.w * 0.6,
       });
-      let y = r.y + 16 + MODELS.length * 46 + 8;
-      p.divider(r.x, y, r.w);
-      y += 16;
-      p.micro('Observation site', r.x, y, { size: 13 });
       const cols = 3;
       const cw = (r.w - 16) / cols;
       SITES.forEach((site, i) => {
         const x = r.x + (i % cols) * (cw + 8);
-        const yy = y + 16 + Math.floor(i / cols) * 34;
+        const yy = r.y + 18 + Math.floor(i / cols) * 34;
         p.pill(`site:${site.id}`, x, yy, cw, 30, {
           label: site.name, align: 'center', active: s.siteId === site.id,
           hover: p.panel.hoverAmount(`site:${site.id}`), tone: 'accent',
         });
       });
+
+      let y = r.y + 18 + Math.ceil(SITES.length / cols) * 34 + 12;
+      p.divider(r.x, y, r.w);
+      y += 18;
+
+      // OpenRouter: optional. Without it the copilot stays the deterministic
+      // analyst, which is the honest default rather than a degraded one.
+      p.micro('Copilot model', r.x, y, { size: 13 });
+      const hasKey = !!s.aiKey;
+      p.chip(r.x + r.w - 92, y, hasKey ? 'openrouter' : 'on-device', {
+        tone: hasKey ? 'good' : 'mute', size: 11.5,
+      });
+      y += 20;
+      p.field('ai:key', r.x, y, r.w, 34, {
+        placeholder: 'Paste an OpenRouter API key (optional)',
+        value: hasKey ? '•'.repeat(8) + s.aiKey.slice(-4) : '',
+        focused: false,
+      });
+      y += 42;
+      if (hasKey) {
+        p.pill('ai:clear', r.x, y, 108, 28, { label: 'Remove key', ico: 'close', hover: p.panel.hoverAmount('ai:clear') });
+        p.text(s.aiModel, r.x + 120, y + 14, { size: 13, mono: true, color: c(t.ink3, 1), max: r.w - 124 });
+        y += 36;
+      }
+      p.paragraph(
+        hasKey
+          ? 'Questions go to OpenRouter with the live model state attached. Your key is stored only in this browser and is never sent anywhere else.'
+          : 'Without a key the copilot answers from the numbers on screen — accurate, but it only knows this workspace. Add a key for open-ended conversation. It stays in this browser.',
+        r.x, y, r.w, { size: 13, lh: 1.45, maxLines: 4, color: c(t.ink2, 0.92) }
+      );
     } else {
       let y = r.y;
       p.text('AETHER Workspace', r.x, y, { size: 20, weight: 600, color: c(t.ink, 1) });

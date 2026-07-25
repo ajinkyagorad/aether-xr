@@ -94,6 +94,22 @@
       .hints k { color: var(--accent); font-weight: 600; font-family: ui-monospace, monospace; font-size: 11.5px;
                  border: 1px solid rgba(53,200,255,0.3); border-radius: 5px; padding: 1px 6px; height: fit-content; white-space: nowrap; }
 
+      #prefs { margin-top: 16px; font-size: 13px; color: rgba(232,242,255,0.55); }
+      #prefs summary {
+        cursor: pointer; list-style: none; padding: 8px 0;
+        color: var(--accent); font-weight: 600; user-select: none;
+      }
+      #prefs summary::-webkit-details-marker { display: none; }
+      #prefs summary::before { content: '⌥ '; opacity: 0.7; }
+      #prefs p { margin: 4px 0 12px; line-height: 1.55; }
+      #prefs input {
+        width: 100%; margin-bottom: 8px; padding: 11px 13px; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.14); background: rgba(0,0,0,0.32);
+        color: #e8f2ff; font: inherit; font-size: 14px;
+      }
+      #prefs input:focus { outline: none; border-color: var(--accent); }
+      #prefsSaved { color: #3ee6a0; font-size: 12.5px; }
+
       #boot { position: fixed; left: 0; right: 0; bottom: 0; height: 2px; background: transparent; z-index: 11; }
       #boot i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2));
                 transition: width 0.35s ease; }
@@ -116,6 +132,19 @@
         <button class="ghost" id="desktop">Preview on this screen (mouse + WASD)</button>
 
         <div id="status"></div>
+
+        <details id="prefs">
+          <summary>Copilot settings</summary>
+          <p>
+            Optional. Without a key the copilot answers from the live model on-device.
+            The key is stored only in this browser and is sent nowhere but OpenRouter.
+          </p>
+          <input id="aiKey" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="OpenRouter API key (sk-or-…)" />
+          <input id="aiModel" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="anthropic/claude-3.5-sonnet" />
+          <span id="prefsSaved"></span>
+        </details>
 
         <div class="hints">
           <div><k>pinch</k><span>Select &amp; drag — index + thumb</span></div>

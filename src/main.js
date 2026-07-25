@@ -8,14 +8,15 @@
  */
 
 import * as THREE from 'three';
-import { store, MODELS, SCENARIOS } from './core/state.js';
+import { store, MODELS, SCENARIOS, TOOLS } from './core/state.js';
 import { XRInput } from './core/input.js';
 import { Environment } from './core/env.js';
 import { Interaction } from './core/interaction.js';
-import { Workspace } from './ui/workspace.js';
+import { Ambient } from './core/audio.js';
+import { Workspace, viewLayerPreset } from './ui/workspace.js';
 import { Hologram } from './scene/holo.js';
 import { SITES, loadSite, simulate, locateUser } from './data/sources.js';
-import { answer, replyDelay, SUGGESTIONS } from './data/assistant.js';
+import { answer, answerRemote, replyDelay, SUGGESTIONS } from './data/assistant.js';
 
 /** Flattened once so the chat log can show a suggestion's label, not its id. */
 const SUGGESTION_LABELS = new Map(
@@ -75,6 +76,24 @@ const holo = new Hologram(scene);
 const input = new XRInput(renderer, scene, rig);
 const workspace = new Workspace(rig, holo);
 const interaction = new Interaction(input, workspace, holo, onAction);
+const ambient = new Ambient();
+
+/** Web Audio needs a user gesture, so this can only run from a tap. */
+async function toggleAudio() {
+  const s = store.get();
+  if (!s.audioOn) {
+    const ok = await ambient.start(s.themeId, s.audioVolume);
+    if (!ok) {
+      store.say('ai', 'This browser would not let me open an audio context.');
+      return;
+    }
+    ambient.resume();
+    store.set({ audioOn: true });
+  } else {
+    ambient.stop();
+    store.set({ audioOn: false });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // theme plumbing
@@ -86,6 +105,7 @@ function applyTheme() {
   holo.setTheme(t);
   input.setTheme(t);
   workspace.applyTheme(t);
+  ambient.setTheme(t.id);
   document.documentElement.style.setProperty('--accent', `rgb(${t.accent.join(',')})`);
   document.documentElement.style.setProperty('--accent2', `rgb(${t.accent2.join(',')})`);
 }
@@ -137,27 +157,51 @@ function onAction(id, ctx) {
       if (arg === 'projects') store.set({ view: 'overview' });
       break;
 
-    case 'view':
+    case 'view': {
       store.set({ view: arg });
-      // Views retarget the model rather than merely relabelling it.
-      if (arg === 'simulation') store.set({ playing: true });
-      if (arg === 'ecosystem') setLayer('vegetation', true);
-      if (arg === 'surface') setLayer('terrain', true);
-      break;
-
-    case 'tool':
-      if (arg === 'record') {
-        const on = !s.recording;
-        store.set({ recording: on, recordStart: on ? performance.now() : 0 });
-        store.say('ai', on ? 'Recording this session.' : 'Recording stopped.');
-      } else if (arg === 'layers') {
-        store.set({ section: 'home', tool: 'layers' });
-        workspace.assetTab = 'layers';
-        workspace.panels.get('assets').markDirty();
-      } else {
-        store.set({ tool: arg });
+      // A view swaps the panel set (handled in Workspace.updateVisibility) and
+      // repoints the model's layers, so the tab bar visibly does something.
+      const preset = viewLayerPreset(arg);
+      if (Object.keys(preset).length) {
+        Object.assign(s.layers, preset);
+        store.touch('layers');
       }
       break;
+    }
+
+    case 'tool': {
+      const spec = TOOLS.find((x) => x.id === arg);
+      if (spec?.mode) {
+        store.set({ tool: arg });
+        break;
+      }
+      switch (arg) {
+        case 'layers':
+          workspace.assetTab = 'layers';
+          store.set({ section: 'home', view: 'overview' });
+          workspace.panels.get('assets').markDirty();
+          break;
+        case 'frame':
+          holo.resetTransform();
+          break;
+        case 'recentre':
+          recentre();
+          store.set({ lastGesture: 'recentred' });
+          break;
+        case 'pin':
+          // Pinning does not move anything — it just refuses future automatic
+          // repositioning, so the workspace stays where you put it.
+          store.set({ pinned: !s.pinned });
+          store.say('ai', s.pinned
+            ? 'Workspace unpinned — Recentre will move it again.'
+            : 'Workspace pinned to this spot. It will stay put until you unpin it.');
+          break;
+        case 'reset':
+          onAction('reset:all', {});
+          break;
+      }
+      break;
+    }
 
     case 'layer':
       setLayer(arg, !s.layers[arg]);
@@ -235,11 +279,18 @@ function onAction(id, ctx) {
         workspace.panels.get('copilot').markDirty();
       } else if (arg === 'send') {
         const text = workspace.chatDraft.trim();
-        if (text) {
-          workspace.chatDraft = '';
-          workspace.chatFocused = false;
-          workspace.updateVisibility();
-          workspace.panels.get('keyboard').markDirty();
+        workspace.chatDraft = '';
+        workspace.chatFocused = false;
+        workspace.updateVisibility();
+        workspace.panels.get('keyboard').markDirty();
+        if (workspace.keyEntry) {
+          workspace.keyEntry = false;
+          if (text) {
+            localStorage.setItem('aether.aiKey', text);
+            store.set({ aiKey: text, section: 'settings' });
+            store.say('ai', 'Key saved in this browser. I will use OpenRouter from now on.');
+          }
+        } else if (text) {
           ask(text);
         }
       }
@@ -288,7 +339,32 @@ function onAction(id, ctx) {
       break;
 
     case 'close':
-      store.close(arg);
+      // Settings and Projects are modal sections, not cards on the wall —
+      // closing them means leaving the section, not hiding a panel forever.
+      if (arg === 'settings' || arg === 'projects') store.set({ section: 'home' });
+      else store.close(arg);
+      break;
+
+    case 'ai':
+      if (arg === 'key') {
+        workspace.chatFocused = true;
+        workspace.keyEntry = true;
+        workspace.chatDraft = '';
+        workspace.updateVisibility();
+        workspace.panels.get('keyboard').markDirty();
+      } else if (arg === 'clear') {
+        localStorage.removeItem('aether.aiKey');
+        store.set({ aiKey: '' });
+        store.say('ai', 'Key removed. Back to answering on-device.');
+      }
+      break;
+
+    case 'audio':
+      if (arg === 'toggle') toggleAudio();
+      else if (arg === 'volume') {
+        store.set({ audioVolume: ctx.value });
+        ambient.setVolume(ctx.value);
+      }
       break;
 
     case 'reset':
@@ -391,11 +467,11 @@ function handleHolo(arg, ctx) {
 let askTimer = 0;
 let pendingReply = null;
 
-function ask(intent) {
+async function ask(intent) {
   const s = store.get();
   store.say('user', SUGGESTION_LABELS.get(intent) ?? intent);
-  store.set({ chatBusy: true, section: 'assistant' });
-  const reply = answer(intent, {
+  store.set({ chatBusy: true });
+  const askCtx = {
     sim: recomputeSim(),
     weather: s.data?.weather?.ok ? s.data.weather : null,
     air: s.data?.air?.ok ? s.data.air : null,
@@ -403,9 +479,14 @@ function ask(intent) {
     site: store.site,
     model: store.model,
     knobs: s.knobs,
-  });
+  };
+  // With a key this round-trips OpenRouter and falls back to the on-device
+  // analyst on any failure; without one it never leaves the headset.
+  const reply = s.aiKey
+    ? await answerRemote(intent, askCtx, { key: s.aiKey, model: s.aiModel })
+    : answer(intent, askCtx);
   pendingReply = reply;
-  askTimer = replyDelay(reply.text);
+  askTimer = s.aiKey ? 0 : replyDelay(reply.text);
 }
 
 // ---------------------------------------------------------------------------
@@ -422,8 +503,15 @@ function loadModel() {
 const _head = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 
-/** Re-seat the whole workspace on wherever the user is now looking. */
-function recentre() {
+/**
+ * Re-seat the whole workspace on wherever the user is now looking.
+ *
+ * Only ever called explicitly — from the Recentre tool, Home, or the very first
+ * frame of a session. Nothing in the frame loop touches it, so the wall stays
+ * bolted to the room while you walk around it.
+ */
+function recentre({ force = false } = {}) {
+  if (store.get().pinned && !force) return;
   camera.getWorldPosition(_head);
   camera.getWorldDirection(_dir);
   _dir.y = 0;
@@ -511,7 +599,7 @@ async function startXR(kind) {
     });
 
     // Seat the workspace once the runtime has a real head pose.
-    setTimeout(recentre, 350);
+    setTimeout(() => recentre({ force: true }), 350);
   } catch (e) {
     enterBtn.disabled = false;
     enterBtn.textContent = 'Enter workspace';
@@ -676,6 +764,24 @@ window.addEventListener('resize', () => {
   setBoot(0.6);
   enterBtn.addEventListener('click', () => startXR(support === 'vr' ? 'vr' : 'ar'));
   desktopBtn.addEventListener('click', startDesktop);
+
+  // Copilot key, configurable before the headset goes on. Kept in localStorage
+  // on this device only — there is no server here to hold it.
+  const keyEl = document.getElementById('aiKey');
+  const modelEl = document.getElementById('aiModel');
+  const savedEl = document.getElementById('prefsSaved');
+  keyEl.value = store.get().aiKey;
+  modelEl.value = store.get().aiModel;
+  const persist = () => {
+    const key = keyEl.value.trim();
+    const model = modelEl.value.trim() || 'anthropic/claude-3.5-sonnet';
+    key ? localStorage.setItem('aether.aiKey', key) : localStorage.removeItem('aether.aiKey');
+    localStorage.setItem('aether.aiModel', model);
+    store.set({ aiKey: key, aiModel: model });
+    savedEl.textContent = key ? `Saved · using ${model}` : 'Cleared · answering on-device';
+  };
+  keyEl.addEventListener('change', persist);
+  modelEl.addEventListener('change', persist);
 
   // Try the device's own location so the model is about somewhere real to you.
   const here = await locateUser(5000);
